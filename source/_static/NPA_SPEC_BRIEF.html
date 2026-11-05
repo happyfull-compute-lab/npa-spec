@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<title>NPA 简要技术规格书 v0.3</title>
+<style>
+  :root { --ink:#1a1a1a; --mut:#666; --line:#ddd; --acc:#0b5; --warn:#a30; --bg:#fafafa; }
+  body { font: 15px/1.55 "Segoe UI", "PingFang SC", sans-serif; color:var(--ink); background:var(--bg); max-width:920px; margin:2rem auto; padding:0 1.25rem; }
+  h1 { font-size:1.55rem; border-bottom:3px solid var(--ink); padding-bottom:.4rem; }
+  h2 { font-size:1.2rem; margin-top:2rem; color:#033; border-left:4px solid var(--acc); padding-left:.55rem; }
+  h3 { font-size:1.02rem; margin:1.2rem 0 .45rem; }
+  table { border-collapse:collapse; width:100%; margin:.65rem 0; font-size:.92rem; }
+  th,td { border:1px solid var(--line); padding:.42rem .55rem; text-align:left; vertical-align:top; }
+  th { background:#eef5f2; }
+  pre { background:#111; color:#d8f5e4; padding:.85rem 1rem; overflow-x:auto; border-radius:6px; font-size:.82rem; line-height:1.4; }
+  pre.light { background:#f2f2f2; color:#222; border:1px solid var(--line); }
+  .tag { display:inline-block; background:#e8f6ee; color:#065; padding:.1rem .45rem; border-radius:3px; font-size:.8rem; margin-right:.35rem; }
+  .warn { color:var(--warn); }
+  .mut { color:var(--mut); font-size:.88rem; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:.9rem; }
+  @media (max-width:700px){ .grid2{grid-template-columns:1fr;} }
+  .card { background:#fff; border:1px solid var(--line); border-radius:8px; padding:.85rem 1rem; }
+  .inv li { margin:.22rem 0; }
+  footer { margin-top:2.5rem; padding-top:1rem; border-top:1px solid var(--line); color:var(--mut); font-size:.85rem; }
+</style>
+</head>
+<body>
+
+<h1>NPA 简要技术规格书</h1>
+<p class="mut">Nested Privilege Architecture · v0.3（理论定论摘要）· 配套：SPEC_NPA_CORE / A_D / B / MEM_SEC</p>
+
+<p><span class="tag">一句话</span> 递归特权 = 相对域树上的 <b>call/return</b>；特权在 <b>DCB</b>，执行在 <b>Context</b>；向上只有 <b>ascend</b>。</p>
+<p class="mut">元原则：宗旨为实现让路；发现漏洞先讨论再修订。</p>
+
+<h2>1. 设计宗旨</h2>
+<table>
+<tr><th>#</th><th>原则</th><th>要点</th></tr>
+<tr><td>P1</td><td>最小概念闭集</td><td>无明显区别不拆概念，禁驾驶舱</td></tr>
+<tr><td>P2</td><td>一名一义</td><td>禁双名；传统词只作脚注（syscall/hypercall…）</td></tr>
+<tr><td>P3</td><td>特权 ≠ 执行 ≠ ABI</td><td>DCB / Context / task_info 分离</td></tr>
+<tr><td>P4</td><td>递归视角</td><td>无绝对特权层号；不用 Domain N</td></tr>
+<tr><td>P5</td><td>ISA 无关</td><td>不绑寄存器名 / EL / Ring</td></tr>
+<tr><td>P6</td><td>可执行规范</td><td>模型可打脸理论</td></tr>
+</table>
+
+<h2>2. 域模型与称呼</h2>
+
+<pre>
+        root domain (id=0)
+              │
+         ┌────┴────┐┐
+        hyp(id=1)   ...
+            │
+           gk(id=2)     δ 视角（在 jit 内）:
+            │             δ=0   self = jit
+           gu(id=3)       δ=-1  parent = gu
+            │             δ=-2  gk
+         jit(id=4)
+</pre>
+
+<table>
+<tr><th>概念</th><th>记号</th><th>中文</th><th>用途</th></tr>
+<tr><td>绝对身份</td><td><b>id</b></td><td>域 ID</td><td>安全认证 / DMA / 调试；<b>非特权级</b></td></tr>
+<tr><td>树关系</td><td>self / parent / child</td><td>当前域/父域/子域</td><td>控制流叙述</td></tr>
+<tr><td>相对层差</td><td>δ</td><td>相对层差</td><td>递归 / 页表链 / 信息隔离</td></tr>
+</table>
+<p class="warn">禁止：Domain 0/1/−1、用 id 比大小表特权、用 δ 做安全身份。身份看 id，关系看 parent/child，递归看 δ。</p>
+
+<h2>3. 原语闭集（A/D 定论）</h2>
+
+<pre>
+  parent                         child
+    │  alloc DCB + configure       │
+    │  descend(dcb)  ────────────► │   first: PC ← entry
+    │  (挂起在调用点)               │   resume: PC ← Context
+    │  ◄────────  ascend(reason,x) │   回到调用点之后
+    │  handle; descend(dcb) ─────► │
+    │  ◄──────────── ascend(EXIT)  │   → lifecycle=TERM
+    │  reap（父责任）               │
+</pre>
+
+<div class="grid2">
+<div class="card">
+<h3>只保留</h3>
+<ul>
+<li><b>descend(dcb)</b> — 唯一进入形态</li>
+<li><b>ascend(reason, x)</b> — 唯一向上原语</li>
+</ul>
+</div>
+<div class="card">
+<h3>reason 闭集</h3>
+<ul>
+<li>SERVICE — 含 syscall/hypercall</li>
+<li>RESULT — 正常返回</li>
+<li>EXCEPTION — 同步异常上报</li>
+<li>EXIT — 结束，不可 resume</li>
+</ul>
+</div>
+</div>
+
+<table>
+<tr><th>不设</th><th>原因</th></tr>
+<tr><td>escalate / return_to_parent / RETURN</td><td>服务 = ascend + 再 descend</td></tr>
+<tr><td>独立 exit 原语</td><td>ascend(EXIT)</td></tr>
+<tr><td>descend(dcb, entry)</td><td>签名不净；first/resume 仍需状态</td></tr>
+<tr><td>手动 MOV LR</td><td>不自然；返回点硬件自动存</td></tr>
+<tr><td>LR 兼 entry</td><td>saved_lr 双职回归</td></tr>
+</table>
+
+<p><b>first / resume 对软件透明</b>：由 hardware <b>lifecycle</b> 决定。</p>
+
+<h2>4. Lifecycle（FREE / LIVE / TERM）</h2>
+
+<pre>
+  FREE ──descend(first)──► LIVE ──ascend(EXIT)──► TERM
+   ▲                                              │
+   └──────────── parent reap / reinit ────────────┘
+
+  descend:  FREE → first (PC←entry)
+            LIVE → resume (PC←Context)
+            TERM → fault（须 reap）
+</pre>
+
+<table>
+<tr><th>值</th><th>descend</th><th>变迁</th></tr>
+<tr><td>FREE</td><td>first</td><td>create / reap</td></tr>
+<tr><td>LIVE</td><td>resume</td><td>首次 descend</td></tr>
+<tr><td>TERM</td><td><b>拒绝</b></td><td>ascend(EXIT)</td></tr>
+</table>
+<p class="mut">lifecycle 是硬件自服务/编程冗余，<b>不是</b> task state 镜像；放置 DCB/task 由 OS 决定；热路径切换 = 只递 DCB 对象（I20）。</p>
+
+<h2>5. DCB Spec Field（10 words / 40B）</h2>
+
+<pre>
+off   name   owner    meaning
+─────────────────────────────────────
+0x00  sz     parent   size in words
+0x04  id     system   domain id
+0x08  entry  parent   first-PC（仅 first 用）
+0x0C  edel   parent   1=子可自管异常，0=一律上交
+0x10  exc    child    自管时异常入口（edel=1 且 ≠0）
+0x14  irq    system   interrupt handle
+0x18  ipa    parent   地址约束表
+0x1C  ptb    child    页表基址（0=继承翻译）
+0x20  child  parent   当前子域 DCB
+0x24  sec    system   安全组 handle
+── Impdef 0x28 起（isa 等）──
+</pre>
+
+<p>Context（GPR/PC/SP/flags…）在 <b>DCB 之外</b>，ISA 定义；禁止 saved_* / irq_saved_* 进 Spec。</p>
+
+<h2>6. 事件路由</h2>
+
+<pre>
+  exception:
+    if edel==1 and exc≠0:  本地 exc
+    else:                  ascend(EXCEPTION, info)
+
+  irq:   irq 实例 vector（异步，独立）
+  fault: 软件分类后走 ascend；非第三硬件入口
+</pre>
+
+<table>
+<tr><th>edel</th><th>exc</th><th>行为</th><th>典型</th></tr>
+<tr><td>0</td><td>*</td><td>一律上交</td><td>隔离 try、严格沙箱</td></tr>
+<tr><td>1</td><td>0</td><td>上交</td><td>—</td></tr>
+<tr><td>1</td><td>≠0</td><td>本地；可再 ascend</td><td>Guest 页错</td></tr>
+</table>
+<p class="mut">委托的是「谁收拾残局」，不是「能否越权」——越权必失败（I14）。</p>
+
+<h2>7. 地址视图（lazy 内存）</h2>
+
+<pre>
+  ┌────────────┬──────────────────────────┬────────────────────┐
+  │ ptb / ipa  │ 翻译                     │ ipa 检查对象       │
+  ├────────────┼──────────────────────────┼────────────────────┤
+  │ 0 / 0      │ 纯继承（同父）           │ 无（同父权限）     │
+  │ 0 / ≠0     │ 继承翻译 + 权限覆盖      │ VA                 │
+  │ ≠0 / *     │ 子VA→父视图→…→PA（链）   │ 父视图地址(IPA)    │
+  └────────────┴──────────────────────────┴────────────────────┘
+
+  access = 翻译 → ipa 权限 → 机密/密钥检查 → 才读写
+</pre>
+
+<p class="mut">cache/TLB（后置优化）只加速 page-table hit，<b>不改语义</b>；TLB 须带域标签；机密明文不得因 cache 泄露。</p>
+
+<h2>8. 安全（模型要求；算法/存放归实现）</h2>
+
+<table>
+<tr><th></th><th>普通 sec</th><th>机密 csec</th></tr>
+<tr><td>隔离对象</td><td>除 root trust 外</td><td>含 root trust</td></tr>
+<tr><td>root 读内容</td><td>可以</td><td>不可以（除非显式 share）</td></tr>
+<tr><td>父域读内容</td><td>不可以</td><td>不可以</td></tr>
+<tr><td>与外界交互</td><td>共享约定</td><td><b>仅显式暴露</b>（x / 共享窗）</td></tr>
+<tr><td>密钥</td><td>root/安全侧可管</td><td>仅域路径；root 无 K</td></tr>
+<tr><td>抢占/调度</td><td colspan="2"><b>父域可以</b>（中断/抢占/reap）——隔离的是可见性，不是控制权（I27）</td></tr>
+</table>
+
+<pre>
+  伪装上下文（csec 被打断时, I28）:
+
+    csec ──preempt──► 安全侧存真 Context
+                      对父: token/空壳（无真 PC/regs）
+    父 ──descend──► 安全侧校验 token → 穿回真 Context → 进 csec
+</pre>
+
+<table>
+<tr><th>接口（规格）</th><th>实现自定</th></tr>
+<tr><td>preset、bind、attest、key_set_region、expose、check_access</td><td>算法、root trust 载体、报文、固件</td></tr>
+</table>
+
+<p><b>secure lib</b>：不单列类型 = 小/复用地址空间的 sec/csec，验码后短跑 EXIT（I26）。</p>
+
+<h2>9. 访问隔离矩阵（摘要）</h2>
+
+<table>
+<tr><th>视角</th><th>数据 R</th><th>数据 W</th><th>取指 X</th><th>打断/调度</th></tr>
+<tr><td>owner</td><td>✓</td><td>✓</td><td>✓</td><td>—</td></tr>
+<tr><td>parent</td><td>✗</td><td>✗</td><td>✗</td><td>✓</td></tr>
+<tr><td>peer</td><td>✗</td><td>✗</td><td>✗</td><td>—</td></tr>
+<tr><td>lower</td><td>✗</td><td>✗</td><td>✗</td><td>—</td></tr>
+<tr><td>root</td><td>仅 sec</td><td>仅 sec</td><td>仅 sec</td><td>✓</td></tr>
+</table>
+<p class="mut">csec：root 亦不可读；share 窗按页显式开放；key_set_region 仅安全子系统。</p>
+
+<h2>10. 核心不变量（I1–I28 选摘）</h2>
+
+<ol class="inv">
+<li><b>I1</b> 向上指令仅 ascend。</li>
+<li><b>I2</b> 父恢复点 = descend 调用点之后。</li>
+<li><b>I3/I18</b> entry 不兼返回点；descend(dcb) 唯一形态。</li>
+<li><b>I4</b> Spec 无 saved_* / ABI 字段。</li>
+<li><b>I11–I12</b> ptb=0 不改写父翻译；纯 INHERIT 不宽于父。</li>
+<li><b>I13–I14</b> edel=0 异常必上交；越权必失败。</li>
+<li><b>I16–I17</b> 安全域 bind 校验绝对 id；TERM 拒 resume。</li>
+<li><b>I19–I20</b> Spec 不含 task_info；热路径不批量改 DCB。</li>
+<li><b>I23–I25</b> 密钥不进 Spec；csec 被动不可读（含 root）。</li>
+<li><b>I27–I28</b> 可打断不可窥探；csec 伪装 Context。</li>
+</ol>
+
+<h2>11. 验证入口（模型）</h2>
+
+<pre class="light">cd rpa-paper
+python -m model.scenarios    # 域/控制流 6 场景
+python -m model.scale_probe  # 多 VM/进程 + lifecycle
+python -m model.memsec       # 安全 S2–S11
+python -m model.isolation    # 隔离矩阵 + 伪装 Context
+</pre>
+
+<h2>12. 明确不做（现阶段）</h2>
+<ul>
+<li>TrustZone 式 secure lib 永久链接</li>
+<li>cache 一致性 / 预取策略（仅约束等价）</li>
+<li>密码学算法与 root trust 物理存放（归实现）</li>
+<li>侧信道完整防护</li>
+<li>旧 pysim 作为目标规格（仅历史证据）</li>
+</ul>
+
+<footer>
+NPA Spec Summary · 理论与模型对齐 v0.3.x · 详细条文见 notes/SPEC_*.md · 实现（QEMU/gem5）打脸理论时先讨论再修订
+</footer>
+
+</body>
+</html>
