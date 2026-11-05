@@ -1,7 +1,7 @@
 # Configuration file for the Sphinx NPA specification.
 project = "NPA"
 copyright = "NPA Project"
-author = "NPA"
+author = "Arthur Dev"
 release = "0.3-draft"
 
 extensions = []

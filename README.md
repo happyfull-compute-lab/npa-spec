@@ -1,6 +1,7 @@
 # NPA Spec (Sphinx)
 
-Official **Nested Privilege Architecture** specification (draft v0.3).
+Official specification for **Nested Privilege Architecture (NPA)**
+(draft v0.3). Formerly named RPA (Recursive Privilege Architecture).
 
 ## Build
 
@@ -13,14 +14,24 @@ sphinx-build -b html source _build/html
 
 Open `_build/html/index.html`.
 
-Static HTML drafts (same content, ASCII diagrams) are in `source/_static/`.
+Static HTML drafts with ASCII diagrams live in `source/_static/`.
 
 ## Scope
 
-Architecture **requirements** only. Crypto, root-trust storage, and protocols
-are implementation choices.
+This repository defines architecture **requirements** only:
+primitives, DCB, events, address views, security model and interfaces.
+Cryptographic algorithms, root-trust storage, and wire protocols are
+implementation choices.
+
+## Author
+
+Paper and documentation signature: **Arthur Dev**.
 
 ## History
 
-Supersedes `happyfull-compute-lab/rpa-spec` (legacy, keep for research trail).
-Name: RPA → NPA (Nested Privilege Architecture).
+Supersedes `happyfull-compute-lab/rpa-spec` (legacy, archived for the
+research trail). Keep old RPA names only in historical notes.
+
+---
+
+This work was completed with AI assistance.
